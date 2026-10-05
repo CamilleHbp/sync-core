@@ -1,0 +1,13 @@
+{
+  "repository": "https://github.com/CamilleHbp/groceries",
+  "baseCommit": "7754bb99a11d127f4138c2110074b79846e63a2c",
+  "source": "working-tree snapshot, including uncommitted engine files",
+  "sha256": {
+    "core/engine.go": "e8fb5f44f8377b38bfe46e1d5e3961f5e6a82d829ea8ec4951963dd2f7424c55",
+    "core/batch.go": "a1019911ac46ac555ebcf842ab5abc0ddbe8cb5486c4881f33aa9c257f46f435",
+    "core/database.go": "0f557053cf6d588f9f12e5189d70277c825a504409b91863f4a3f9edda75aa10",
+    "core/storage.go": "9f7da986106314e535092036affdeb7f95236d2b90298383fd375e4f1e207808",
+    "core/model.go": "6f424b47a1c8a8a07dd7df585358a7de7417315b2ed3d1966d3b38b142b11b01",
+    "mobile/mobile.go": "09a629d8015e3d041a5536a58d952b008ab7012344518a0c9f8b6ae1c1eeb1f2"
+  }
+}

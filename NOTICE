@@ -1,0 +1,4 @@
+Sync engine extracted from the CamilleHbp/groceries working-tree snapshot.
+Source fingerprints are recorded in testdata/extraction-source.json.
+Uses anyproto/any-sync at 3ff0564adca2 (MIT); see LICENSE.any-sync.
+Grocery application schemas and rules are test fixtures, not public library behavior.
