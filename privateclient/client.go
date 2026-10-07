@@ -310,7 +310,7 @@ func pinBinding(directory string, binding any) error {
 	if closeErr != nil {
 		return closeErr
 	}
-	if err = os.Link(f.Name(), path); os.IsExist(err) {
+	if err = publishBinding(f.Name(), path); os.IsExist(err) {
 		return compare()
 	} else if err != nil {
 		return err
