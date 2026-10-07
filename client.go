@@ -16,11 +16,12 @@ import (
 )
 
 type identity struct {
-	Origin   string   `json:"origin"`
-	Token    string   `json:"token"`
-	Bundle   Bundle   `json:"bundle"`
-	Cursor   uint64   `json:"cursor"`
-	Recovery []string `json:"recovery,omitempty"`
+	NativeAvailable bool     `json:"nativeAvailable,omitempty"`
+	Origin          string   `json:"origin"`
+	Token           string   `json:"token"`
+	Bundle          Bundle   `json:"bundle"`
+	Cursor          uint64   `json:"cursor"`
+	Recovery        []string `json:"recovery,omitempty"`
 }
 type Client struct {
 	mu      sync.Mutex
@@ -118,6 +119,8 @@ func (c *Client) request(ctx context.Context, origin, token, route string, in, o
 			switch response.StatusCode {
 			case 401, 403:
 				problem.Code = "sign_in_required"
+			case 404:
+				problem.Code = "not_found"
 			case 429:
 				problem.Code = "rate_limited"
 			default:
@@ -148,6 +151,7 @@ func (c *Client) Connect(ctx context.Context, origin, code string) error {
 	}
 	var result struct {
 		Token  string `json:"token"`
+		Native bool   `json:"native"`
 		Bundle Bundle `json:"bundle"`
 	}
 	if err = c.request(ctx, normalized, "", "login", map[string]string{"code": code}, &result); err != nil {
@@ -171,6 +175,7 @@ func (c *Client) Connect(ctx context.Context, origin, code string) error {
 	next.Origin = normalized
 	next.Token = result.Token
 	next.Bundle = result.Bundle
+	next.NativeAvailable = result.Native
 	if err = c.db.Commit(engine, map[string]any{"identity": next}, false, nil); err != nil {
 		return err
 	}

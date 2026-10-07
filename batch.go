@@ -46,46 +46,61 @@ func (e *Engine) ApplyBatch(batch []Operation) error {
 	if err != nil {
 		return err
 	}
+	fresh, err := prepareBatch(e.config, ops, authors, e.Bundle.User, batch)
+	if err != nil {
+		return err
+	}
+	e.Tree.Lock()
+	defer e.Tree.Unlock()
+	return appendBatch(context.Background(), e.config, e.Tree, e.Keys.SignKey, fresh)
+}
+
+func prepareBatch(config Config, ops map[string]Operation, authors map[string]string, user string, batch []Operation) ([]Operation, error) {
+	if len(batch) > MaxBatch {
+		return nil, errors.New("batch too large")
+	}
 	kinds := map[string]string{}
 	for _, o := range ops {
 		kinds[o.Record] = o.Kind
 	}
 	fresh := []Operation{}
 	for _, o := range batch {
-		if err = e.config.validateOperation(o); err != nil {
-			return err
+		if err := config.validateOperation(o); err != nil {
+			return nil, err
 		}
 		if old, ok := ops[o.ID]; ok {
 			if !SameOperation(old, o) {
-				return errors.New("operation ID reused")
+				return nil, errors.New("operation ID reused")
 			}
 			continue
 		}
 		if kind := kinds[o.Record]; kind != "" && kind != o.Kind {
-			return errors.New("record kind is immutable")
+			return nil, errors.New("record kind is immutable")
 		}
 		kinds[o.Record] = o.Kind
 		for _, id := range o.Replaces {
 			p, ok := ops[id]
 			if !ok || p.Record != o.Record || p.Kind != o.Kind || p.Field != o.Field || p.ID == o.ID {
-				return errors.New("invalid replaced version")
+				return nil, errors.New("invalid replaced version")
 			}
 		}
 		ops[o.ID] = o
-		authors[o.ID] = e.Bundle.User
+		authors[o.ID] = user
 		fresh = append(fresh, o)
 	}
-	if err = e.config.validateRecords(Materialize(ops, authors, e.Bundle.User)); err != nil {
-		return err
+	if err := config.validateRecords(Materialize(ops, authors, user)); err != nil {
+		return nil, err
 	}
-	e.Tree.Lock()
-	defer e.Tree.Unlock()
+	return fresh, nil
+}
+
+func appendBatch(ctx context.Context, config Config, tree objecttree.ObjectTree, key crypto.PrivKey, fresh []Operation) error {
 	if len(fresh) > 0 {
 		b, _ := json.Marshal(fresh)
 		if len(b) > 200000 {
 			return errors.New("transaction too large")
 		}
-		if _, err = e.Tree.AddContent(context.Background(), objecttree.SignableChangeContent{Data: b, Key: e.Keys.SignKey, ShouldBeEncrypted: true, DataType: e.config.Namespace}); err != nil {
+		if _, err := tree.AddContent(ctx, objecttree.SignableChangeContent{Data: b, Key: key, ShouldBeEncrypted: true, DataType: config.Namespace}); err != nil {
 			return err
 		}
 	}

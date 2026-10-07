@@ -1,5 +1,6 @@
-// Package core adapts the real any-sync signed/encrypted object-tree engine to a
-// HTTPS synchronization service. It does not implement the official DRPC peer network.
+// Package synccore adapts upstream signed, encrypted any-sync trees to
+// application operations. It supports legacy HTTPS replicas and native trees
+// hosted on an explicitly configured private any-sync network.
 package synccore
 
 import (
@@ -117,13 +118,21 @@ func (e *Engine) Packet() Packet {
 	return out
 }
 func (e *Engine) Operations() (map[string]Operation, map[string]string, error) {
+	e.Tree.Lock()
+	defer e.Tree.Unlock()
+	return operationsLocked(e.config, e.Tree, e.Bundle.Members)
+}
+
+// operationsLocked projects both legacy and native trees. Callers hold tree's
+// lock, including upstream pre-commit validation callbacks.
+func operationsLocked(config Config, tree objecttree.ObjectTree, members map[string]string) (map[string]Operation, map[string]string, error) {
 	ops := map[string]Operation{}
 	authors := map[string]string{}
+	identities := map[string]string{}
 	kinds := map[string]string{}
 	var bad error
-	e.Tree.Lock()
-	err := e.Tree.IterateRoot(func(ch *objecttree.Change, data []byte) (any, error) {
-		if ch.Id == e.Store.RootID {
+	err := tree.IterateRoot(func(ch *objecttree.Change, data []byte) (any, error) {
+		if ch.Id == tree.Id() {
 			return nil, nil
 		}
 		var batch []Operation
@@ -134,13 +143,13 @@ func (e *Engine) Operations() (map[string]Operation, map[string]string, error) {
 			return nil, errors.New("batch too large")
 		}
 		for _, o := range batch {
-			if err := e.config.validateOperation(o); err != nil {
+			if err := config.validateOperation(o); err != nil {
 				return nil, err
 			}
 		}
 		return batch, nil
 	}, func(ch *objecttree.Change) bool {
-		if ch.Id == e.Store.RootID {
+		if ch.Id == tree.Id() {
 			return true
 		}
 		batch, ok := ch.Model.([]Operation)
@@ -148,11 +157,11 @@ func (e *Engine) Operations() (map[string]Operation, map[string]string, error) {
 			bad = errors.New("invalid operation model")
 			return false
 		}
-		if ch.DataType != e.config.Namespace || ch.IsSnapshot {
+		if ch.DataType != config.Namespace || ch.IsSnapshot {
 			bad = errors.New("unsupported change")
 			return false
 		}
-		author, ok := e.Bundle.Members[ch.Identity.Account()]
+		author, ok := members[ch.Identity.Account()]
 		if !ok {
 			bad = errors.New("unauthorized identity")
 			return false
@@ -163,16 +172,16 @@ func (e *Engine) Operations() (map[string]Operation, map[string]string, error) {
 				return false
 			}
 			kinds[o.Record] = o.Kind
-			if old, ok := ops[o.ID]; ok && !SameOperation(old, o) {
+			if old, ok := ops[o.ID]; ok && (!SameOperation(old, o) || identities[o.ID] != ch.Identity.Account()) {
 				bad = errors.New("operation ID reused")
 				return false
 			}
 			ops[o.ID] = o
 			authors[o.ID] = author
+			identities[o.ID] = ch.Identity.Account()
 		}
 		return true
 	})
-	e.Tree.Unlock()
 	if err != nil {
 		return nil, nil, err
 	}
