@@ -5,6 +5,7 @@ import (
 	"errors"
 	"slices"
 	"sync/atomic"
+	"time"
 
 	"github.com/anyproto/any-sync/app"
 	"github.com/anyproto/any-sync/commonspace/credentialprovider"
@@ -102,7 +103,15 @@ type streamHandler struct{ host *Host }
 
 func (*streamHandler) Name() string        { return streamhandler.CName }
 func (*streamHandler) Init(*app.App) error { return nil }
-func (s *streamHandler) OpenStream(ctx context.Context, p peer.Peer) (drpc.Stream, []string, int, error) {
+func (s *streamHandler) OpenStream(ctx context.Context, p peer.Peer) (result drpc.Stream, tags []string, queueSize int, openErr error) {
+	defer func() {
+		if openErr != nil {
+			s.host.requestStreamRecovery()
+		}
+	}()
+	// Match upstream subscription clients: active-but-idle DRPC streams are
+	// otherwise reaped by the pool's one-minute TTL, even with TCP keepalive.
+	p.SetTTL(24 * time.Hour)
 	ctx = peer.CtxWithPeerId(s.host.ctx, p.Id())
 	conn, err := p.AcquireDrpcConn(ctx)
 	if err != nil {
@@ -114,7 +123,10 @@ func (s *streamHandler) OpenStream(ctx context.Context, p peer.Peer) (drpc.Strea
 		return nil, nil, 0, err
 	}
 	// Acquired connections belong to this stream until it terminates.
-	context.AfterFunc(stream.Context(), func() { p.ReleaseDrpcConn(context.Background(), conn) })
+	context.AfterFunc(stream.Context(), func() {
+		p.ReleaseDrpcConn(context.Background(), conn)
+		s.host.requestStreamRecovery()
+	})
 	// Subscriptions belong to a stream, not to the peer connection. Reopening
 	// an idle stream must restore them even when no local writes are queued.
 	s.host.mu.Lock()

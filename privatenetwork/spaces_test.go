@@ -255,7 +255,7 @@ func TestPrivateApplicationReplica(t *testing.T) {
 	defer closeHost(t, r1, h1)
 	r2, h2 := startHost(t, data, networkID, t.TempDir(), secondKeys)
 	defer closeHost(t, r2, h2)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	master, _, err := crypto.GenerateRandomEd25519KeyPair()
 	if err != nil {
@@ -342,8 +342,18 @@ func TestPrivateApplicationReplica(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitRecord(a, "notes", "Reply")
-	// Simulate lost sockets without stopping the app or its database. A single
-	// connectivity event restores subscriptions; no app polling follows it.
+	// Optional real idle regression: no app calls or writes for longer than
+	// the upstream one-minute peer TTL plus its GC cadence.
+	if os.Getenv("SYNC_CORE_TEST_IDLE") == "1" {
+		time.Sleep(100 * time.Second)
+		op.ID, op.Value, op.Replaces = core.RandomID(), "After idle", []string{op.ID}
+		if err = a.Apply(ctx, []core.Operation{op}); err != nil {
+			t.Fatal(err)
+		}
+		waitRecord(b, "title", "After idle")
+	}
+	// Lost sockets must restore subscriptions without an application call to
+	// Reconnect and without waiting for upstream's ten-minute anti-entropy.
 	for _, nodeID := range r2.Nodes.NodeIds(sp.Id()) {
 		p, err := r2.Pool.Get(ctx, nodeID)
 		if err != nil {
@@ -352,9 +362,6 @@ func TestPrivateApplicationReplica(t *testing.T) {
 		if err = p.Close(); err != nil {
 			t.Fatal(err)
 		}
-	}
-	if err = h2.Reconnect(ctx); err != nil {
-		t.Fatal(err)
 	}
 	op.ID, op.Value, op.Replaces = core.RandomID(), "After reconnect", []string{op.ID}
 	if err = a.Apply(ctx, []core.Operation{op}); err != nil {

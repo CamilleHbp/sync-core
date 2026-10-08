@@ -32,15 +32,17 @@ var ErrHostClosed = errors.New("private space host is closed")
 // before the Runtime. Callers must stop using returned trees before Close.
 // No legacy replica is modified or implicitly enrolled by this API.
 type Host struct {
-	runtime *Runtime
-	service commonspace.SpaceService
-	storage *storageProvider
-	streams streampool.StreamPool
-	mu      sync.Mutex
-	spaces  map[string]*spaceEntry
-	closed  bool
-	ctx     context.Context
-	cancel  context.CancelFunc
+	runtime       *Runtime
+	service       commonspace.SpaceService
+	storage       *storageProvider
+	streams       streampool.StreamPool
+	mu            sync.Mutex
+	spaces        map[string]*spaceEntry
+	closed        bool
+	ctx           context.Context
+	cancel        context.CancelFunc
+	recoverStream chan struct{}
+	recovery      sync.WaitGroup
 }
 type spaceEntry struct {
 	ready   chan struct{}
@@ -60,6 +62,7 @@ func AttachSpaces(r *Runtime, directory string) (*Host, error) {
 	}
 	h := &Host{runtime: r, service: commonspace.New(), storage: &storageProvider{directory: filepath.Join(directory, "spaces"), spaces: map[string]spacestorage.SpaceStorage{}}, streams: streampool.New(), spaces: map[string]*spaceEntry{}}
 	h.ctx, h.cancel = context.WithCancel(context.Background())
+	h.recoverStream = make(chan struct{}, 1)
 	r.App.Register(h.storage).Register(h).Register(&peerProvider{host: h}).
 		Register(&credentials{runtime: r}).Register(&streamHandler{host: h}).
 		Register(h.streams).Register(nodeclient.New()).Register(syncqueues.New()).Register(h.service)
@@ -69,7 +72,11 @@ func (h *Host) Name() string { return treemanager.CName }
 func (h *Host) Init(a *app.App) error {
 	return spacesyncproto.DRPCRegisterSpaceSync(a.MustComponent(server.CName).(server.DRPCServer), &spaceRPC{host: h})
 }
-func (h *Host) Run(context.Context) error { return nil }
+func (h *Host) Run(context.Context) error {
+	h.recovery.Add(1)
+	go h.recoverSubscriptions()
+	return nil
+}
 
 // CreateSpace persists an owner-signed space locally. Admission and replication
 // happen through upstream commonspace/credential services, not custom HTTP.
@@ -281,6 +288,7 @@ func (h *Host) Close(ctx context.Context) error {
 		entries = append(entries, e)
 	}
 	h.mu.Unlock()
+	h.recovery.Wait()
 	var result error
 	for _, e := range entries {
 		<-e.ready
