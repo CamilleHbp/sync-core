@@ -186,38 +186,52 @@ type RecordPage struct {
 
 func (d *Database) Records(after uint64) (RecordPage, error) {
 	p := RecordPage{Records: []Record{}, Cursor: after}
+	tx, err := d.SQL.BeginTx(context.Background(), &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return p, err
+	}
+	defer tx.Rollback()
 	var edge sql.NullInt64
-	err := d.SQL.QueryRow("SELECT MAX(seq) FROM (SELECT DISTINCT seq FROM records WHERE seq>? ORDER BY seq LIMIT 1)", after).Scan(&edge)
+	err = tx.QueryRow("SELECT MAX(seq) FROM (SELECT DISTINCT seq FROM records WHERE seq>? ORDER BY seq LIMIT 1)", after).Scan(&edge)
 	if err != nil {
 		return p, err
 	}
 	if !edge.Valid {
-		return p, nil
+		return p, tx.Commit()
 	}
-	rows, err := d.SQL.Query("SELECT value,seq FROM records WHERE seq>? AND seq<=? ORDER BY seq,id", after, edge.Int64)
+	rows, err := tx.Query("SELECT value,seq FROM records WHERE seq>? AND seq<=? ORDER BY seq,id", after, edge.Int64)
 	if err != nil {
 		return p, err
 	}
+	var values [][]byte
 	for rows.Next() {
-		var b []byte
-		var r Record
-		if err = rows.Scan(&b, &p.Cursor); err != nil {
+		var value []byte
+		if err = rows.Scan(&value, &p.Cursor); err != nil {
 			rows.Close()
 			return p, err
 		}
-		if err = json.Unmarshal(b, &r); err != nil {
-			rows.Close()
-			return p, err
-		}
-		p.Records = append(p.Records, r)
+		values = append(values, value)
 	}
 	err = rows.Err()
 	rows.Close()
 	if err != nil {
 		return p, err
 	}
-	err = d.SQL.QueryRow("SELECT EXISTS(SELECT 1 FROM records WHERE seq>?)", p.Cursor).Scan(&p.More)
-	return p, err
+	if err = tx.QueryRow("SELECT EXISTS(SELECT 1 FROM records WHERE seq>?)", p.Cursor).Scan(&p.More); err != nil {
+		return p, err
+	}
+	if err = tx.Commit(); err != nil {
+		return p, err
+	}
+	// Release the database connection before decoding an owned committed page.
+	for _, value := range values {
+		var record Record
+		if err = json.Unmarshal(value, &record); err != nil {
+			return p, err
+		}
+		p.Records = append(p.Records, record)
+	}
+	return p, nil
 }
 
 type SyncRequest struct {
