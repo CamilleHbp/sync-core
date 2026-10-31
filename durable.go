@@ -60,7 +60,12 @@ func (d *Database) ApplyBatchAs(e *Engine, bundle Bundle, batch []Operation, loc
 		authors[op.ID] = bundle.User
 	}
 	changed, _ := e.cache.project(delta, authors, bundle.User)
-	_, err = e.Tree.AddContentWithValidator(context.Background(), objecttree.SignableChangeContent{Data: data, Key: key, ShouldBeEncrypted: true, DataType: e.config.Namespace}, func(change objecttree.StorageChange) error {
+	_, err = e.Tree.AddContentWithValidator(context.Background(), objecttree.SignableChangeContent{Data: data, Key: key, ShouldBeEncrypted: true, DataType: e.config.Namespace}, func(change objecttree.StorageChange) (commitErr error) {
+		defer func() {
+			if commitErr != nil {
+				commitErr = NewError("storage_unavailable", commitErr)
+			}
+		}()
 		tx, err := d.SQL.Begin()
 		if err != nil {
 			return err
