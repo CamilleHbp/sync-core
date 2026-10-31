@@ -52,7 +52,8 @@ func (r *Replica) ReconcileLegacy(ctx context.Context, source *Engine, bundles [
 	if source.config.Namespace != r.config.Namespace {
 		return nil, NewError("namespace_mismatch", nil)
 	}
-	if _, _, err := source.Operations(); err != nil {
+	sourceOps, sourceAuthors, err := source.Operations()
+	if err != nil {
 		return nil, err
 	}
 	source.Tree.Lock()
@@ -82,9 +83,19 @@ func (r *Replica) ReconcileLegacy(ctx context.Context, source *Engine, bundles [
 		return nil, err
 	}
 	for _, transaction := range incoming {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		key := keys[transaction.Account]
 		if key == nil {
 			return nil, NewError("invalid_identity", nil)
+		}
+		known, err := knownTransaction(transaction, ops, authors, r.members[transaction.Account])
+		if err != nil {
+			return nil, err
+		}
+		if known {
+			continue
 		}
 		fresh, err := prepareBatch(r.config, ops, authors, r.members[transaction.Account], transaction.Operations)
 		if err != nil {
@@ -98,10 +109,7 @@ func (r *Replica) ReconcileLegacy(ctx context.Context, source *Engine, bundles [
 	if err != nil {
 		return nil, err
 	}
-	result, err := source.Clone()
-	if err != nil {
-		return nil, err
-	}
+	result := source
 	for _, transaction := range outgoing {
 		if err = ctx.Err(); err != nil {
 			return nil, err
@@ -109,6 +117,19 @@ func (r *Replica) ReconcileLegacy(ctx context.Context, source *Engine, bundles [
 		b, ok := identities[transaction.Account]
 		if !ok {
 			return nil, NewError("invalid_identity", nil)
+		}
+		known, err := knownTransaction(transaction, sourceOps, sourceAuthors, b.User)
+		if err != nil {
+			return nil, err
+		}
+		if known {
+			continue
+		}
+		if result == source {
+			result, err = source.Clone()
+			if err != nil {
+				return nil, err
+			}
 		}
 		writer, err := Open(source.config, b, result.Store)
 		if err != nil {
@@ -118,7 +139,32 @@ func (r *Replica) ReconcileLegacy(ctx context.Context, source *Engine, bundles [
 			return nil, err
 		}
 		result.Store = writer.Store
+		for _, operation := range transaction.Operations {
+			sourceOps[operation.ID] = operation
+			sourceAuthors[operation.ID] = b.User
+		}
+	}
+	if result == source {
+		return source, nil
 	}
 	result, err = Open(source.config, source.Bundle, result.Store)
 	return result, err
+}
+
+// A transaction already present with identical content and author needs no tree
+// reconstruction or full projection validation. Check every operation even in
+// mixed batches, so the fast path never hides a reused ID or changed author.
+func knownTransaction(transaction Transaction, operations map[string]Operation, authors map[string]string, user string) (bool, error) {
+	known := true
+	for _, operation := range transaction.Operations {
+		previous, exists := operations[operation.ID]
+		if !exists {
+			known = false
+			continue
+		}
+		if !SameOperation(previous, operation) || authors[operation.ID] != user {
+			return false, errors.New("operation ID reused")
+		}
+	}
+	return known, nil
 }
