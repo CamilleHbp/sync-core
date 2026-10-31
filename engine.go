@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"maps"
 	"os"
 	"path/filepath"
 	"sort"
@@ -95,15 +96,38 @@ func Open(config Config, bundle Bundle, store *MemoryStorage) (*Engine, error) {
 	}
 	return &Engine{config: config, Bundle: bundle, Store: store, Tree: tree, Keys: keys}, nil
 }
-func (e *Engine) Clone() (*Engine, error) {
+func (e *Engine) Clone() (*Engine, error) { return e.CloneAs(e.Bundle) }
+
+// CloneAs preserves the validated projection while selecting an existing
+// workspace member's signing identity. It never changes membership or history.
+func (e *Engine) CloneAs(bundle Bundle) (*Engine, error) {
+	e.Tree.Lock()
+	defer e.Tree.Unlock()
+	if bundle.Root == nil || bundle.Root.Id != e.Bundle.Root.Id || !maps.Equal(bundle.Members, e.Bundle.Members) {
+		return nil, NewError("invalid_identity", nil)
+	}
+	if _, err := e.cache.update(e.config, e.Tree, e.Bundle.Members, e.Bundle.User); err != nil {
+		return nil, err
+	}
 	st := *e.Store
 	st.HeadIDs = append([]string{}, e.Store.HeadIDs...)
-	st.Changes = map[string]objecttree.StorageChange{}
-	for id, c := range e.Store.Changes {
-		st.Changes[id] = c
+	st.Changes = maps.Clone(e.Store.Changes)
+	next, err := Open(e.config, bundle, &st)
+	if err != nil {
+		return nil, err
 	}
-	return Open(e.config, e.Bundle, &st)
+	next.cache = e.cache
+	next.cache.heads = append([]string{}, e.cache.heads...)
+	next.cache.seen = maps.Clone(e.cache.seen)
+	next.cache.ops = maps.Clone(e.cache.ops)
+	next.cache.authors = maps.Clone(e.cache.authors)
+	next.cache.identities = maps.Clone(e.cache.identities)
+	next.cache.kinds = maps.Clone(e.cache.kinds)
+	next.cache.records = maps.Clone(e.cache.records)
+	next.cache.view.User = bundle.User
+	return next, nil
 }
+
 func (e *Engine) Packet() Packet {
 	out := Packet{RootID: e.Tree.Id(), Heads: e.Tree.Heads(), Changes: []*treechangeproto.RawTreeChangeWithId{}}
 	var cs []objecttree.StorageChange
