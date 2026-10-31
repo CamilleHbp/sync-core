@@ -38,6 +38,7 @@ type Packet struct {
 	Changes []*treechangeproto.RawTreeChangeWithId `json:"changes"`
 }
 type Engine struct {
+	cache  projectionCache
 	config Config
 	Bundle Bundle
 	Store  *MemoryStorage
@@ -293,12 +294,15 @@ func (e *Engine) Merge(p Packet, expectedAccount string) error {
 	return e.config.validateRecords(view)
 }
 func (e *Engine) View() (View, error) {
-	ops, authors, err := e.Operations()
+	e.Tree.Lock()
+	defer e.Tree.Unlock()
+	view, err := e.cache.update(e.config, e.Tree, e.Bundle.Members, e.Bundle.User)
 	if err != nil {
 		return View{}, err
 	}
-	return Materialize(ops, authors, e.Bundle.User), nil
+	return copyView(view), nil
 }
+
 func AtomicJSON(path string, value any) error {
 	data, err := json.Marshal(value)
 	if err != nil {

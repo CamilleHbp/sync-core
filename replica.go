@@ -20,6 +20,7 @@ import (
 // signing identity, ACL permissions and network acceptance on every change.
 // This API does not migrate or activate a legacy Client.
 type Replica struct {
+	cache   projectionCache
 	config  Config
 	tree    synctree.SyncTree
 	keys    *accountdata.AccountKeys
@@ -75,15 +76,11 @@ func (r *Replica) View() (View, error) {
 	return r.viewLocked(r.tree)
 }
 func (r *Replica) viewLocked(tree objecttree.ObjectTree) (View, error) {
-	ops, authors, err := operationsLocked(r.config, tree, r.members)
+	view, err := r.cache.update(r.config, tree, r.members, r.user)
 	if err != nil {
 		return View{}, err
 	}
-	view := Materialize(ops, authors, r.user)
-	if err = r.config.validateRecords(view); err != nil {
-		return View{}, err
-	}
-	return view, nil
+	return copyView(view), nil
 }
 
 // Apply commits an encrypted, signed upstream tree transaction locally and
@@ -95,11 +92,11 @@ func (r *Replica) Apply(ctx context.Context, batch []Operation) error {
 	}
 	r.tree.Lock()
 	defer r.tree.Unlock()
-	ops, authors, err := operationsLocked(r.config, r.tree, r.members)
+	_, err := r.cache.update(r.config, r.tree, r.members, r.user)
 	if err != nil {
 		return err
 	}
-	fresh, err := prepareBatch(r.config, ops, authors, r.user, batch)
+	fresh, err := r.cache.prepare(r.config, r.user, batch)
 	if err != nil {
 		return err
 	}

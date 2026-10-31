@@ -39,19 +39,15 @@ func (e *Engine) AncestorIDs(ids []string) ([]string, error) {
 }
 
 func (e *Engine) ApplyBatch(batch []Operation) error {
-	if len(batch) > MaxBatch {
-		return errors.New("batch too large")
-	}
-	ops, authors, err := e.Operations()
-	if err != nil {
-		return err
-	}
-	fresh, err := prepareBatch(e.config, ops, authors, e.Bundle.User, batch)
-	if err != nil {
-		return err
-	}
 	e.Tree.Lock()
 	defer e.Tree.Unlock()
+	if _, err := e.cache.update(e.config, e.Tree, e.Bundle.Members, e.Bundle.User); err != nil {
+		return err
+	}
+	fresh, err := e.cache.prepare(e.config, e.Bundle.User, batch)
+	if err != nil {
+		return err
+	}
 	return appendBatch(context.Background(), e.config, e.Tree, e.Keys.SignKey, fresh)
 }
 

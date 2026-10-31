@@ -97,8 +97,23 @@ func (d *Database) Commit(e *Engine, meta map[string]any, local bool, ack []stri
 	if err = tx.QueryRow("SELECT COALESCE(MAX(seq),0) FROM changes").Scan(&seq); err != nil {
 		return err
 	}
+	dirty := map[string]bool{}
+	writeAll := seq == 0
 	for _, c := range e.Store.Changes {
 		if c.AddSeq > seq || c.Id == e.Store.RootID {
+			if c.Id != e.Store.RootID {
+				change, getErr := e.Tree.GetChange(c.Id)
+				if getErr != nil {
+					return getErr
+				}
+				if operations, ok := change.Model.([]Operation); ok {
+					for _, operation := range operations {
+						dirty[operation.Record] = true
+					}
+				} else {
+					writeAll = true
+				}
+			}
 			b, _ := json.Marshal(c)
 			if _, err = tx.Exec("INSERT OR IGNORE INTO changes VALUES(?,?,?)", c.Id, c.AddSeq, b); err != nil {
 				return err
@@ -111,6 +126,9 @@ func (d *Database) Commit(e *Engine, meta map[string]any, local bool, ack []stri
 		}
 	}
 	for _, r := range v.Records {
+		if !writeAll && !dirty[r.ID] {
+			continue
+		}
 		b, _ := json.Marshal(r)
 		if _, err = tx.Exec(`INSERT INTO records VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET seq=excluded.seq,value=excluded.value WHERE records.value!=excluded.value`, r.ID, e.Store.Seq, b); err != nil {
 			return err
