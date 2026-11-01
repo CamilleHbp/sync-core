@@ -46,10 +46,12 @@ func TestPrivatePairingAndGateway(t *testing.T) {
 	var checkpoint atomic.Value
 	checkpoint.Store(core.View{Records: []core.Record{}})
 	var checkpointsEnabled atomic.Bool
+	var logins atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/api/v1/login":
+			logins.Add(1)
 			json.NewEncoder(w).Encode(map[string]any{"token": "synthetic", "bundle": bundles[0], "native": true})
 		case "/api/v1/native":
 			json.NewEncoder(w).Encode(provision)
@@ -128,6 +130,19 @@ func TestPrivatePairingAndGateway(t *testing.T) {
 	status, _ = client.View()
 	if !status.SyncStatus.Confirmed || status.Pending != 0 || status.SyncStatus.LastSuccessAt == 0 {
 		t.Fatal("matching durable server view not confirmed", status.SyncStatus)
+	}
+	if err = client.Connect(ctx, server.URL, "synthetic"); err != nil {
+		t.Fatal(err)
+	}
+	if logins.Load() != 2 {
+		t.Fatal("native reconnect did not renew checkpoint authentication")
+	}
+	if err = client.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	status, _ = client.View()
+	if !status.SyncStatus.Confirmed || status.Records[0].Value("title") != "Native edit" {
+		t.Fatal("renewal lost native data or confirmation")
 	}
 	if err = client.Close(); err != nil {
 		t.Fatal(err)

@@ -134,6 +134,11 @@ func (c *Client) Connect(ctx context.Context, origin, code string) error {
 		return errors.New("client closed")
 	}
 	if c.native != nil {
+		// Checkpoint authentication uses the paired HTTP session even when data
+		// travels over the private network. Renew it without replacing the replica.
+		if err := c.legacy.Connect(ctx, origin, code); err != nil {
+			return err
+		}
 		return c.native.Reconnect(ctx)
 	}
 	if err := c.legacy.Connect(ctx, origin, code); err != nil {
