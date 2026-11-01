@@ -30,6 +30,8 @@ type activation struct {
 	LegacyWorkspace string    `json:"legacyWorkspace"`
 }
 type Client struct {
+	checking         sync.Mutex
+	health           *core.SyncTracker
 	upgradeAttempted bool
 	mu               sync.RWMutex
 	legacy           *core.Client
@@ -49,7 +51,7 @@ func New(directory string, config core.Config) (*Client, error) {
 		return nil, err
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	c := &Client{legacy: legacy, config: config, directory: directory, events: make(chan struct{}, 1), ctx: ctx, cancel: cancel}
+	c := &Client{health: core.NewSyncTracker(filepath.Join(directory, "sync-health.json")), legacy: legacy, config: config, directory: directory, events: make(chan struct{}, 1), ctx: ctx, cancel: cancel}
 	data, err := os.ReadFile(filepath.Join(directory, "native-active.json"))
 	if err == nil {
 		var saved activation
@@ -125,6 +127,7 @@ func (c *Client) openNative(ctx context.Context, p Provision) error {
 	return nil
 }
 func (c *Client) Connect(ctx context.Context, origin, code string) error {
+	c.health.Invalidate()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed {
@@ -197,6 +200,7 @@ func (c *Client) View() (core.ClientView, error) {
 	}
 	old, err := c.legacy.View()
 	if err != nil || c.native == nil {
+		old.SyncStatus = c.health.Snapshot(old)
 		return old, err
 	}
 	view, err := c.native.View()
@@ -206,9 +210,14 @@ func (c *Client) View() (core.ClientView, error) {
 	old.Records = view.Records
 	// -1 means that node durability is not measured, not "zero pending".
 	old.Pending = -1
+	old.SyncStatus = c.health.Snapshot(old)
+	if old.SyncStatus.Confirmed {
+		old.Pending = 0
+	}
 	return old, nil
 }
 func (c *Client) Apply(ctx context.Context, ops []core.Operation) error {
+	c.health.Invalidate()
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	if c.closed {
@@ -222,7 +231,7 @@ func (c *Client) Apply(ctx context.Context, ops []core.Operation) error {
 	}
 	return err
 }
-func (c *Client) Sync(ctx context.Context) error {
+func (c *Client) syncTransport(ctx context.Context) error {
 	c.mu.Lock()
 	if !c.closed && c.native == nil && !c.upgradeAttempted {
 		c.upgradeAttempted = true
@@ -257,4 +266,49 @@ func (c *Client) Close() error {
 		err = c.native.Close(ctx)
 	}
 	return errors.Join(err, c.legacy.Close())
+}
+
+// Sync reconnects transport and checks the server's durable checkpoint. A live
+// native peer alone never establishes server confirmation.
+func (c *Client) Sync(ctx context.Context) error { return c.check(ctx, true) }
+
+// Check refreshes confirmation without repeatedly reconnecting a live native
+// transport. Foreground clients may call this periodically; legacy clients sync.
+func (c *Client) Check(ctx context.Context) error { return c.check(ctx, false) }
+
+func (c *Client) check(ctx context.Context, reconnect bool) error {
+	c.checking.Lock()
+	defer c.checking.Unlock()
+	generation := c.health.Begin()
+	c.mu.RLock()
+	native := c.native != nil
+	closed := c.closed
+	c.mu.RUnlock()
+	if closed {
+		return errors.New("client closed")
+	}
+	var err error
+	if reconnect || !native {
+		err = c.syncTransport(ctx)
+	}
+	view, viewErr := c.View()
+	if err == nil {
+		err = viewErr
+	}
+	// syncTransport may have activated the native replica on this call.
+	c.mu.RLock()
+	native = c.native != nil
+	c.mu.RUnlock()
+	confirmed, supported := view.Pending == 0, true
+	if err == nil && native {
+		var checkpoint core.CheckpointResponse
+		checkpoint, supported, err = c.legacy.Checkpoint(ctx)
+		// Read again after HTTP: intervening remote updates invalidate the proof.
+		if err == nil {
+			view, err = c.View()
+		}
+		confirmed = supported && err == nil && checkpoint.Digest == core.RecordsDigest(view.Records)
+	}
+	c.health.Complete(view, generation, confirmed, supported, err)
+	return err
 }

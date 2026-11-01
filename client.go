@@ -33,12 +33,13 @@ type Client struct {
 	http    *http.Client
 }
 type ClientView struct {
-	Authenticated bool     `json:"authenticated"`
-	User          string   `json:"user"`
-	Workspace     string   `json:"workspace"`
-	Origin        string   `json:"origin"`
-	Pending       int      `json:"pending"`
-	Records       []Record `json:"records"`
+	SyncStatus    SyncStatus `json:"syncStatus"`
+	Authenticated bool       `json:"authenticated"`
+	User          string     `json:"user"`
+	Workspace     string     `json:"workspace"`
+	Origin        string     `json:"origin"`
+	Pending       int        `json:"pending"`
+	Records       []Record   `json:"records"`
 }
 
 func NewClient(directory string, config Config) (*Client, error) {

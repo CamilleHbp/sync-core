@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -42,6 +43,9 @@ func TestPrivatePairingAndGateway(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var checkpoint atomic.Value
+	checkpoint.Store(core.View{Records: []core.Record{}})
+	var checkpointsEnabled atomic.Bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
@@ -51,6 +55,20 @@ func TestPrivatePairingAndGateway(t *testing.T) {
 			json.NewEncoder(w).Encode(provision)
 		case "/api/v1/sync":
 			json.NewEncoder(w).Encode(source.Page(0))
+		case "/api/v1/checkpoint":
+			if !checkpointsEnabled.Load() {
+				w.WriteHeader(404)
+				return
+			}
+			var request core.CheckpointRequest
+			json.NewDecoder(r.Body).Decode(&request)
+			response, err := core.NewCheckpoint(request, cfg.Namespace, bundles[0].Root.Id, checkpoint.Load().(core.View).Records)
+			if err != nil {
+				t.Error(err)
+				w.WriteHeader(400)
+				return
+			}
+			json.NewEncoder(w).Encode(response)
 		case "/api/v1/events":
 			w.Header().Set("Content-Type", "text/event-stream")
 			fmt.Fprint(w, "event: change\ndata: {}\n\n")
@@ -80,6 +98,21 @@ func TestPrivatePairingAndGateway(t *testing.T) {
 	if err = client.Apply(ctx, []core.Operation{edit}); err != nil {
 		t.Fatal(err)
 	}
+	if err = client.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	status, _ := client.View()
+	if status.SyncStatus.Confirmed || status.SyncStatus.Supported || status.Pending != -1 {
+		t.Fatal("old server was treated as confirmed", status.SyncStatus)
+	}
+	checkpointsEnabled.Store(true)
+	if err = client.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	status, _ = client.View()
+	if status.SyncStatus.Confirmed || !status.SyncStatus.Supported {
+		t.Fatal("mismatched server records confirmed", status.SyncStatus)
+	}
 	merged, err := client.native.ReconcileLegacy(ctx, source, bundles)
 	if err != nil {
 		t.Fatal(err)
@@ -87,6 +120,14 @@ func TestPrivatePairingAndGateway(t *testing.T) {
 	view, err := merged.View()
 	if err != nil || view.Records[0].Value("title") != "Native edit" {
 		t.Fatalf("gateway lost native edit: %v", err)
+	}
+	checkpoint.Store(view)
+	if err = client.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	status, _ = client.View()
+	if !status.SyncStatus.Confirmed || status.Pending != 0 || status.SyncStatus.LastSuccessAt == 0 {
+		t.Fatal("matching durable server view not confirmed", status.SyncStatus)
 	}
 	if err = client.Close(); err != nil {
 		t.Fatal(err)
@@ -96,6 +137,9 @@ func TestPrivatePairingAndGateway(t *testing.T) {
 		t.Fatal(err)
 	}
 	restored, err := client.View()
+	if restored.SyncStatus.Confirmed || restored.SyncStatus.LastSuccessAt == 0 {
+		t.Fatal("restart reused proof or lost timestamp")
+	}
 	if err != nil || restored.Records[0].Value("title") != "Native edit" {
 		t.Fatalf("native restart lost data: %v", err)
 	}

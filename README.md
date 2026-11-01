@@ -235,3 +235,30 @@ back to an Anytype-operated network.
 Run `go test -race ./...` and `go vet ./...`. Tests cover Groceries-generated signed history with synthetic accounts, conflicts, one-owner and multiple-editor workspaces, namespaces, offline restart, replay, edits during HTTP, and failed durable commits. Fixture keys are synthetic test material.
 
 Consumers pin a release tag or commit. Groceries supplies its domain schema to this shared engine; VerveTwoDo uses the same engine through its mobile and desktop adapters.
+
+### Server confirmation and sync status
+
+`appclient.Client.Sync(ctx)` reconnects transport when needed and checks server
+receipt. `Check(ctx)` refreshes confirmation without reconnecting an active native
+transport; it is suitable for periodic foreground health checks. Both legacy and
+native replicas expose `ClientView.SyncStatus`, including confirmation support,
+last attempt, last completed check, and last confirmed snapshot timestamps.
+
+A native transport connection is not receipt evidence. The authenticated
+`POST /api/v1/checkpoint` route must first persist its native gateway projection,
+then call `NewCheckpoint(request, namespace, workspace, durableRecords)`. Return
+that response with `Cache-Control: no-store`. The existing pairing session,
+namespace checks, and workspace authorization must protect this route. Clients
+validate the response nonce, namespace, workspace, and canonical causal digest.
+The protocol sends no task contents. It works for any application schema.
+
+Matching causal records establish confirmation for that exact snapshot. Local
+edits, concurrent edits during a check, different remote records, errors, and
+process restarts invalidate current proof. Historical timestamps survive restart.
+Older servers without the endpoint remain supported but unconfirmed; native
+pending counts remain unknown (`-1`) until receipt is confirmed (`0`).
+
+User interfaces must also account for the application journal/outbox, unresolved
+conflicts, offline state, and confirmation age. They should keep warnings visible
+while retrying and never interpret an unknown pending count as zero. A successful
+check confirms this device against the server, not the online state of every peer.
