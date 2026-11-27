@@ -2,7 +2,7 @@
 
 A Go library for apps that need to keep working offline. Each device has a local replica. The app can save an edit immediately and exchange signed changes with the other replicas when a connection returns.
 
-[Integrate the Go client](docs/integration.md#client-contract)
+[Self-host a Tasks workspace or an any-sync network](docs/self-hosting.md) · [Integrate the Go client](docs/integration.md#client-contract)
 
 ## What happens when two people edit a record?
 
