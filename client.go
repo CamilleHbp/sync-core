@@ -147,9 +147,7 @@ func (c *Client) Connect(ctx context.Context, origin, code string) error {
 	defer c.syncing.Unlock()
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.engine != nil && c.state.Origin != normalized {
-		return NewError("identity_mismatch", nil)
-	}
+	// An edited address must still prove the existing workspace identity below.
 	var result struct {
 		Token  string `json:"token"`
 		Native bool   `json:"native"`
@@ -161,6 +159,16 @@ func (c *Client) Connect(ctx context.Context, origin, code string) error {
 	if result.Token == "" {
 		return NewError("invalid_response", nil)
 	}
+	revoke := func(address, token string) error {
+		var reply map[string]bool
+		return c.request(ctx, address, token, "logout", map[string]any{}, &reply)
+	}
+	accepted := false
+	defer func() {
+		if !accepted {
+			_ = revoke(normalized, result.Token)
+		}
+	}()
 	if c.engine != nil && (result.Bundle.Root == nil || c.state.Bundle.Root.Id != result.Bundle.Root.Id || c.state.Bundle.User != result.Bundle.User || !bytes.Equal(c.state.Bundle.Key, result.Bundle.Key)) {
 		return NewError("identity_mismatch", nil)
 	}
@@ -172,6 +180,11 @@ func (c *Client) Connect(ctx context.Context, origin, code string) error {
 	if err != nil {
 		return err
 	}
+	if c.state.Token != "" && c.state.Token != result.Token {
+		if err := revoke(c.state.Origin, c.state.Token); err != nil && ErrorCode(err) != "sign_in_required" && ErrorCode(err) != "not_found" {
+			return err
+		}
+	}
 	next := c.state
 	next.Origin = normalized
 	next.Token = result.Token
@@ -180,6 +193,7 @@ func (c *Client) Connect(ctx context.Context, origin, code string) error {
 	if err = c.db.Commit(engine, map[string]any{"identity": next}, false, nil); err != nil {
 		return err
 	}
+	accepted = true
 	c.state = next
 	c.engine = engine
 	return nil
