@@ -262,3 +262,7 @@ User interfaces must also account for the application journal/outbox, unresolved
 conflicts, offline state, and confirmation age. They should keep warnings visible
 while retrying and never interpret an unknown pending count as zero. A successful
 check confirms this device against the server, not the online state of every peer.
+
+## License
+
+The original sync-core code, including earlier revisions, is available under the [Apache License 2.0](LICENSE). The any-sync components retain their [MIT license](LICENSE.any-sync). See [NOTICE](NOTICE) for attribution.
