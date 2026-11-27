@@ -235,3 +235,7 @@ back to an Anytype-operated network.
 Run `go test -race ./...` and `go vet ./...`. Tests cover Groceries-generated signed history with synthetic accounts, conflicts, one-owner and multiple-editor workspaces, namespaces, offline restart, replay, edits during HTTP, and failed durable commits. Fixture keys are synthetic test material.
 
 Consumers pin a release tag or commit. Groceries supplies its domain schema to this shared engine; VerveTwoDo uses the same engine through its mobile and desktop adapters.
+
+## License
+
+The original sync-core code, including earlier revisions, is available under the [Apache License 2.0](LICENSE). The any-sync components retain their [MIT license](LICENSE.any-sync). See [NOTICE](NOTICE) for attribution.
